@@ -2,12 +2,28 @@ services:
 
    data-gen:
      image: synapstream/activation/datagen:latest
+     ports:
+       # Control API (/api/generation). Host port defaults to 8081; override with DATAGEN_PORT.
+       - "${DATAGEN_PORT:-8081}:8080"
+     environment:
+       # Pin paths explicitly rather than relying on the image's working directory.
+       DATAGEN_OUTPUTDIR: /data/audiences
+       DATAGEN_SCHEDULE_STATEFILE: /data/schedule.json
+     volumes:
+       - audience-data:/data
 
    delta-job:
     image:  synapstream/activation/deltajob:latest
+    volumes:
+      # Same mount point as data-gen, so paths in manifest.json resolve identically. Read-only: data-gen owns it.
+      - audience-data:/data:ro
 
    workflow:
-     image: io.synapstream/activation/workflow:latest
+     image: synapstream/activation/workflow:latest
 
    mock-platforms:
-     image: io.synapstream/activation/mock:latest
+     image: synapstream/activation/mock:latest
+
+volumes:
+   # Audience snapshots, expected deltas, manifest.json and the saved schedule, written by data-gen.
+   audience-data:
