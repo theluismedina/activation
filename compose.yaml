@@ -2,20 +2,12 @@ services:
 
    data-gen:
      image: synapstream/activation/datagen:latest
-     volumes:
-       - ./apps/datagen:/opt/datagen
 
    delta-job:
     image:  synapstream/activation/deltajob:latest
-    volumes:
-      - ./apps/deltajob:/opt/deltajob
 
    workflow:
      image: io.synapstream/activation/workflow:latest
-     volumes:
-       - ./apps/deltajob:/opt/workflow
 
    mock-platforms:
      image: io.synapstream/activation/mock:latest
-     volumes:
-       - ./apps/mock:/opt/mock
