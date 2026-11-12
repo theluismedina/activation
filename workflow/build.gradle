@@ -1,0 +1,32 @@
+plugins {
+    id 'java'
+    id 'com.google.cloud.tools.jib' version '3.5.4'
+}
+
+group = 'io.synapstream'
+version = '0.0.1-SNAPSHOT'
+
+jib{
+    to {
+        image = 'synapstream/activation/workflow:latest'
+    }
+    container {
+        // Required so apt-get and the cron daemon have permission to run
+        user = 'root'
+        entrypoint = ['/bin/sh', '-c', 'apt-get update && apt-get install -y cron && /usr/local/bin/start-cron.sh']
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:6.0.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+}

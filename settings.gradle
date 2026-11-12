@@ -1,0 +1,5 @@
+rootProject.name = 'activation'
+include 'mock'
+include 'data-gen'
+include 'delta-job'
+include 'workflow'
