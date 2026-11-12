@@ -1,7 +1,5 @@
 # Tiny Activation Engine
 
-# Tiny Activation Engine
-
 A small, working model of a data activation pipeline: it computes what changed in large customer audiences each day and delivers only those changes, reliably, to multiple ad platforms with different rate limits.
 
 Data activation means taking audience data from a warehouse or CRM and sending it to the platforms where it's used, such as ad networks, Connected TV, and email tools. At scale, the hard part isn't sending data; it's sending the right data, reliably, without overwhelming anyone.
