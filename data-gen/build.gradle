@@ -46,12 +46,12 @@ dependencies {
         exclude group: 'io.netty'
         exclude group: 'dnsjava'
     }
+    // ParquetFileReader (used to read the previous snapshot) references one MapReduce class.
+    implementation('org.apache.hadoop:hadoop-mapreduce-client-core:3.4.1') { transitive = false }
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
     testImplementation 'org.awaitility:awaitility'
-    // ParquetFileReader (used to verify output) touches a MapReduce class; the app itself never reads.
-    testImplementation('org.apache.hadoop:hadoop-mapreduce-client-core:3.4.1') { transitive = false }
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
