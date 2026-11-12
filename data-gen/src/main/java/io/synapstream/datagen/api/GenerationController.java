@@ -6,6 +6,8 @@ import io.synapstream.datagen.generation.RunStatus;
 import io.synapstream.datagen.generation.RunStatus.Trigger;
 import io.synapstream.datagen.generation.ScheduleService;
 import io.synapstream.datagen.generation.ScheduleStatus;
+import io.synapstream.datagen.snapshot.SnapshotInfo;
+import io.synapstream.datagen.snapshot.SnapshotStore;
 import jakarta.validation.constraints.Positive;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -19,12 +21,17 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+import java.util.Locale;
+
 /**
  * Controls audience generation.
  * <pre>
  * GET  /api/generation             current run, last finished run, and schedule
- * POST /api/generation/start       start a run now (optional ?records=N overrides the configured count)
- * POST /api/generation/stop        stop the running run; its partial file is discarded
+ * POST /api/generation/start       start a run now: mutates the latest snapshot, or builds a baseline if none
+ *                                  ?mode=full forces a new baseline; ?records=N (full only) sets its size
+ * POST /api/generation/stop        stop the running run; its partial files are discarded
+ * GET  /api/generation/snapshots   retained snapshots, newest first
  * GET  /api/generation/schedule    current schedule and next fire time
  * PUT  /api/generation/schedule    change cron / zone / enabled (omitted fields are unchanged)
  * </pre>
@@ -35,10 +42,12 @@ public class GenerationController {
 
     private final GenerationService generation;
     private final ScheduleService schedule;
+    private final SnapshotStore snapshots;
 
-    public GenerationController(GenerationService generation, ScheduleService schedule) {
+    public GenerationController(GenerationService generation, ScheduleService schedule, SnapshotStore snapshots) {
         this.generation = generation;
         this.schedule = schedule;
+        this.snapshots = snapshots;
     }
 
     public record GenerationOverview(RunStatus current, RunStatus lastRun, ScheduleStatus schedule) {
@@ -56,8 +65,19 @@ public class GenerationController {
     }
 
     @PostMapping("/start")
-    public ResponseEntity<RunStatus> start(@RequestParam(required = false) @Positive Long records) {
-        return ResponseEntity.accepted().body(generation.start(Trigger.MANUAL, records));
+    public ResponseEntity<RunStatus> start(@RequestParam(required = false) String mode,
+                                           @RequestParam(required = false) @Positive Long records) {
+        boolean forceFull = switch (mode == null ? "auto" : mode.toLowerCase(Locale.ROOT)) {
+            case "auto" -> false;
+            case "full" -> true;
+            default -> throw new IllegalArgumentException("mode must be 'auto' or 'full'");
+        };
+        return ResponseEntity.accepted().body(generation.start(Trigger.MANUAL, forceFull, records));
+    }
+
+    @GetMapping("/snapshots")
+    public List<SnapshotInfo> snapshots() {
+        return snapshots.load().snapshots().reversed();
     }
 
     @PostMapping("/stop")

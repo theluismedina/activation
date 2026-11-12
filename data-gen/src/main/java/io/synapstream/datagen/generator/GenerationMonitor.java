@@ -5,15 +5,19 @@ package io.synapstream.datagen.generator;
  */
 public interface GenerationMonitor {
 
-    /** Called periodically with the total number of rows written so far. */
-    void progress(long rowsWritten);
+    /** Called once the total number of rows the run will process is known. */
+    default void target(long totalRows) {
+    }
 
-    /** Polled periodically; returning {@code true} aborts the run and discards the partial file. */
+    /** Called periodically with the number of rows processed so far. */
+    void progress(long rowsProcessed);
+
+    /** Polled periodically; returning {@code true} aborts the run and discards its partial files. */
     boolean isCancelled();
 
     GenerationMonitor NONE = new GenerationMonitor() {
         @Override
-        public void progress(long rowsWritten) {
+        public void progress(long rowsProcessed) {
         }
 
         @Override

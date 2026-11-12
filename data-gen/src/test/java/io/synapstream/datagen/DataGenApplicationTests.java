@@ -67,7 +67,19 @@ class DataGenApplicationTests {
     }
 
     @Test
-    void startRejectsNonPositiveRecordCount() throws Exception {
-        mvc.perform(post("/api/generation/start").param("records", "0")).andExpect(status().isBadRequest());
+    void startRejectsInvalidParameters() throws Exception {
+        mvc.perform(post("/api/generation/start").param("mode", "full").param("records", "0"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/generation/start").param("records", "1000"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/generation/start").param("mode", "sideways"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void snapshotsListIsEmptyBeforeAnyRun() throws Exception {
+        mvc.perform(get("/api/generation/snapshots"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isEmpty());
     }
 }

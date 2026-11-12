@@ -1,19 +1,20 @@
 package io.synapstream.datagen.generation;
 
+import io.synapstream.datagen.TestProperties;
 import io.synapstream.datagen.config.DataGenProperties;
 import io.synapstream.datagen.generator.AudienceGenerator;
-import org.apache.parquet.hadoop.metadata.CompressionCodecName;
+import io.synapstream.datagen.snapshot.SnapshotStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
-import org.springframework.util.unit.DataSize;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.ZoneId;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -32,7 +33,8 @@ class ScheduleServiceTest {
         stateFile = dir.resolve("state/schedule.json");
         scheduler = new ThreadPoolTaskScheduler();
         scheduler.initialize();
-        generation = new GenerationService(properties(), new AudienceGenerator());
+        generation = new GenerationService(properties(), new AudienceGenerator(),
+                new SnapshotStore(properties(), JsonMapper.builder().build()));
     }
 
     @AfterEach
@@ -104,8 +106,10 @@ class ScheduleServiceTest {
     }
 
     private DataGenProperties properties() {
-        return new DataGenProperties(1_000, 10, 5, 1_000, null, dir.resolve("out"), CompressionCodecName.SNAPPY,
-                DataSize.ofMegabytes(8),
-                new DataGenProperties.Schedule("0 0 2 * * *", java.time.ZoneId.of("America/New_York"), true, stateFile));
+        DataGenProperties base = TestProperties.create(dir);
+        return new DataGenProperties(base.recordCount(), base.customerCount(), base.segmentsPerCustomer(),
+                base.userPoolSize(), base.seed(), base.outputDir(), base.compression(), base.rowGroupSize(),
+                base.mutation(), base.retention(),
+                new DataGenProperties.Schedule("0 0 2 * * *", ZoneId.of("America/New_York"), true, stateFile));
     }
 }

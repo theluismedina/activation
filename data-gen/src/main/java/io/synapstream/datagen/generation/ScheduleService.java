@@ -2,6 +2,7 @@ package io.synapstream.datagen.generation;
 
 import io.synapstream.datagen.config.DataGenProperties;
 import io.synapstream.datagen.generation.RunStatus.Trigger;
+import io.synapstream.datagen.support.AtomicFiles;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -14,10 +15,8 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.time.DateTimeException;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -115,21 +114,9 @@ public class ScheduleService {
     }
 
     private void save(SavedSchedule schedule) {
-        Path temp = stateFile.resolveSibling(stateFile.getFileName() + ".tmp");
         try {
-            Files.createDirectories(stateFile.getParent());
-            json.writerWithDefaultPrettyPrinter().writeValue(temp.toFile(), schedule);
-            try {
-                Files.move(temp, stateFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(temp, stateFile, StandardCopyOption.REPLACE_EXISTING);
-            }
+            AtomicFiles.writeJson(json, stateFile, schedule);
         } catch (IOException | JacksonException e) {
-            try {
-                Files.deleteIfExists(temp);
-            } catch (IOException ignored) {
-                // best effort
-            }
             throw new IllegalStateException("Could not save schedule to " + stateFile, e);
         }
     }
@@ -157,7 +144,7 @@ public class ScheduleService {
 
     private void fire() {
         try {
-            generation.start(Trigger.SCHEDULED, null);
+            generation.start(Trigger.SCHEDULED, false, null);
         } catch (GenerationAlreadyRunningException e) {
             log.warn("Skipping scheduled generation: run {} is still in progress", e.running().id());
         } catch (RuntimeException e) {
