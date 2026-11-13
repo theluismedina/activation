@@ -32,7 +32,38 @@ _Architecture diagram and component overview: coming in week 2._
 
 ## Running it
 
-_Setup instructions: coming soon._
+Only `data-gen` is functional so far; the other services will be added as they are built.
+
+### With prebuilt images (just Docker)
+
+Every merge to `master` publishes images to GitHub Container Registry for `linux/amd64` and `linux/arm64`.
+
+```sh
+git clone https://github.com/theluismedina/activation.git
+cd activation
+docker compose up -d
+```
+
+data-gen's API is then on <http://localhost:8081/api/generation>:
+
+```sh
+curl -X POST localhost:8081/api/generation/start   # first run builds a 10M-row baseline; later runs mutate it 1-5%
+curl localhost:8081/api/generation                 # progress and last run
+curl localhost:8081/api/generation/snapshots       # snapshots kept in the audience-data volume
+```
+
+To change the host port, set `DATAGEN_PORT=9000`. To use a specific build instead of `latest`, set `IMAGE_TAG=sha-<commit>`. To use another registry, set `IMAGE_REGISTRY`.
+
+### From source
+
+You need JDK 21 and Docker. The Gradle wrapper downloads everything else.
+
+```sh
+./gradlew :data-gen:jibDockerBuild   # builds ghcr.io/theluismedina/activation/data-gen:latest locally
+docker compose up -d                 # uses the local image instead of pulling
+```
+
+`docker compose down` keeps the generated data; `docker compose down -v` deletes it.
 
 ## Non-goals
 
