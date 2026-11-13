@@ -25,14 +25,14 @@ _Architecture diagram and component overview: coming in week 2._
 
 | Measurement | Result |
 |---|---|
-| Data sent: delta vs. full refresh | _TBD_ |
-| Delta job runtime at 10M / 50M rows | _TBD_ |
+| Data sent: delta vs. full refresh | 313k vs. 10M rows (21 MB vs. 637 MB) for a 3% daily change |
+| Delta job runtime at 10M / 50M rows | ~27 s at 10M rows, 1–5% changed (16-core laptop, Docker); 50M _TBD_ |
 | Recovery after worker crash | _TBD_ |
 | Urgent-job latency during a large backfill | _TBD_ |
 
 ## Running it
 
-Only `data-gen` is functional so far; the other services will be added as they are built.
+`data-gen` and `delta-job` are functional so far; the other services will be added as they are built.
 
 ### With prebuilt images (just Docker)
 
@@ -54,16 +54,35 @@ curl localhost:8081/api/generation/snapshots       # snapshots kept in the audie
 
 To change the host port, set `DATAGEN_PORT=9000`. To use a specific build instead of `latest`, set `IMAGE_TAG=sha-<commit>`. To use another registry, set `IMAGE_REGISTRY`.
 
+Once a snapshot exists, compute the delta. The job runs once and exits:
+
+```sh
+docker compose run --rm delta-job            # first run: the whole audience (FULL); later runs: only the changes
+docker compose run --rm delta-job --verify   # also check the result against data-gen's expected delta
+docker compose run --rm delta-job --full     # start over with the whole latest audience
+```
+
+Running it again when nothing changed does nothing. Each delta's base is the previous delta's target, so if data-gen ran several times in between, the next delta covers all of those runs.
+
 ### From source
 
 You need JDK 21 and Docker. The Gradle wrapper downloads everything else.
 
 ```sh
-./gradlew :data-gen:jibDockerBuild   # builds ghcr.io/theluismedina/activation/data-gen:latest locally
-docker compose up -d                 # uses the local image instead of pulling
+./gradlew :data-gen:jibDockerBuild :delta-job:jibDockerBuild   # builds the ghcr.io/theluismedina/activation/* images locally
+docker compose up -d                                           # uses the local images instead of pulling
 ```
 
 `docker compose down` keeps the generated data; `docker compose down -v` deletes it.
+
+## Delta format
+
+The delta-job's output is what the activation workflow consumes. Every delta gets its own directory in the `delta-data` volume, named by its id (e.g. `000004-84d2be35-from-a3ba8247`). The directory is moved into place only when it is complete, and it never changes afterwards.
+
+- **`changes.parquet`** uses the same schema as data-gen's expected deltas: `customer_id`, `segment_id`, `hashed_user_id`, `op` (`ADD`/`REMOVE`). Rows are sorted by `(customer_id, segment_id, op, hashed_user_id)`, so each customer's changes form one contiguous range.
+- **`manifest.json`** is the claim check handed to the workflow: the delta id, kind (`INCREMENTAL`, or `FULL` meaning "replace the audience"), base and target snapshots, counts, the file's SHA-256, and each customer's row range (`firstRow`, `rows`, `added`, `removed`). The delta id is deterministic, so it can be used as the Temporal workflow id, and a repeated start is rejected instead of delivering twice.
+
+The diff is a Spark (local mode) full outer join on all three columns, using a shuffled hash join. Spark sorts the result in parallel, and the driver streams it into a single Parquet file. It writes that file itself rather than going through Hadoop's FileSystem, so it runs on Windows without winutils.
 
 ## Non-goals
 
