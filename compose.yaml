@@ -1,7 +1,10 @@
 services:
 
    data-gen:
-     image: synapstream/activation/datagen:latest
+     # Published by CI on every merge to master. Override IMAGE_REGISTRY / IMAGE_TAG to use another registry or a
+     # specific build (e.g. IMAGE_TAG=sha-1a2b3c4). A local `./gradlew :data-gen:jibDockerBuild` produces this same
+     # name, so locally built images are used without pulling.
+     image: ${IMAGE_REGISTRY:-ghcr.io/theluismedina/activation}/data-gen:${IMAGE_TAG:-latest}
      ports:
        # Control API (/api/generation). Host port defaults to 8081; override with DATAGEN_PORT.
        - "${DATAGEN_PORT:-8081}:8080"
@@ -12,16 +15,22 @@ services:
      volumes:
        - audience-data:/data
 
+   # The services below have no published images yet, so they only start with `--profile wip`
+   # (after building them locally).
+
    delta-job:
+    profiles: [wip]
     image:  synapstream/activation/deltajob:latest
     volumes:
       # Same mount point as data-gen, so paths in manifest.json resolve identically. Read-only: data-gen owns it.
       - audience-data:/data:ro
 
    workflow:
+     profiles: [wip]
      image: synapstream/activation/workflow:latest
 
    mock-platforms:
+     profiles: [wip]
      image: synapstream/activation/mock:latest
 
 volumes:

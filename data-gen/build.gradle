@@ -8,7 +8,26 @@ plugins {
 group = 'io.synapstream'
 version = '0.0.1-SNAPSHOT'
 description = 'data-gen'
-jib.to.image = 'synapstream/activation/datagen'
+
+// Image name: <imageRegistry>/data-gen. Defaults to GHCR so a local `jibDockerBuild` produces the same name that
+// compose.yaml runs; CI and forks override it with -PimageRegistry=... (or -Djib.to.image=...).
+def imageRegistry = findProperty('imageRegistry') ?: 'ghcr.io/theluismedina/activation'
+jib {
+    from {
+        image = 'eclipse-temurin:21-jre'
+    }
+    to {
+        image = "${imageRegistry}/data-gen"
+    }
+    container {
+        ports = ['8080']
+        labels = [
+                // Links the GHCR package to this repository.
+                'org.opencontainers.image.source'     : 'https://github.com/theluismedina/activation',
+                'org.opencontainers.image.description': 'Synthetic audience snapshot generator',
+        ]
+    }
+}
 
 
 java {
