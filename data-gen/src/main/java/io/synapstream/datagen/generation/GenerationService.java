@@ -5,10 +5,12 @@ import io.synapstream.datagen.generation.RunStatus.Mode;
 import io.synapstream.datagen.generation.RunStatus.State;
 import io.synapstream.datagen.generation.RunStatus.Trigger;
 import io.synapstream.datagen.generator.AudienceGenerator;
+import io.synapstream.datagen.generator.BaselineResult;
 import io.synapstream.datagen.generator.BaselineSpec;
 import io.synapstream.datagen.generator.GenerationMonitor;
 import io.synapstream.datagen.generator.MutationResult;
 import io.synapstream.datagen.generator.MutationSpec;
+import io.synapstream.datagen.generator.SegmentPopulation;
 import io.synapstream.datagen.generator.WriterSettings;
 import io.synapstream.datagen.snapshot.SnapshotInfo;
 import io.synapstream.datagen.snapshot.SnapshotInfo.Kind;
@@ -89,18 +91,23 @@ public class GenerationService implements DisposableBean {
             // Planned after claiming the slot, so the previous run's manifest commit is guaranteed to be visible.
             Manifest manifest = snapshots.load();
             SnapshotInfo base = forceFull ? null : snapshots.latestUsable(manifest).orElse(null);
+            if (base != null && manifest.population() == null) {
+                log.warn("The manifest predates segment state; starting a new baseline instead of mutating {}",
+                        base.id());
+                base = null;
+            }
             long sequence = manifest.latest().map(latest -> latest.sequence() + 1).orElse(0L);
             Long seed = properties.seed() != null ? properties.seed() + sequence : null;
             // Built here rather than in the background so an impossible size is rejected immediately.
             BaselineSpec baseline = base != null ? null : new BaselineSpec(
                     recordCount != null ? recordCount : properties.recordCount(), properties.customerCount(),
-                    properties.segmentsPerCustomer(), properties.userPoolSize(), seed);
+                    properties.segmentsPerCustomer(), properties.userPoolSize(), properties.segmentSizeSkew(), seed);
             String name = "audiences-" + FILE_TIMESTAMP.format(now) + "-" + id;
             run.plan(
                     base,
                     sequence,
                     seed,
-                    manifest.nextUserId(),
+                    manifest.population(),
                     baseline,
                     snapshots.resolve(name + ".parquet"),
                     base == null ? null : snapshots.resolve(DELTA_DIR + "/" + name + ".parquet"));
@@ -142,25 +149,27 @@ public class GenerationService implements DisposableBean {
         try {
             WriterSettings writer = new WriterSettings(properties.compression(), properties.rowGroupSize().toBytes());
             SnapshotInfo snapshot;
-            long nextUserId;
+            SegmentPopulation population;
             if (run.mode == Mode.FULL) {
-                long rows = generator.generateBaseline(run.baseline, writer, run.file, run);
+                BaselineResult result = generator.generateBaseline(run.baseline, writer, run.file, run);
                 snapshot = new SnapshotInfo(run.id, run.sequence, Kind.FULL, null, Instant.now(),
-                        snapshots.relativize(run.file), null, rows, null, null, null);
-                nextUserId = properties.userPoolSize();
+                        snapshots.relativize(run.file), null, result.rows(), null, null, null);
+                population = result.population();
             } else {
-                MutationSpec spec = new MutationSpec(properties.customerCount(), properties.segmentsPerCustomer(),
-                        properties.mutation().minRate(), properties.mutation().maxRate(), run.firstNewUserId, run.seed);
+                // Segments come from the saved population, not the current settings: those apply from the next
+                // full baseline.
+                MutationSpec spec = new MutationSpec(properties.mutation().minRate(), properties.mutation().maxRate(),
+                        run.population, run.seed);
                 MutationResult result = generator.mutate(spec, writer, snapshots.resolve(run.base.file()),
                         run.file, run.deltaFile, run);
                 snapshot = new SnapshotInfo(run.id, run.sequence, Kind.MUTATION, run.base.id(), Instant.now(),
                         snapshots.relativize(run.file), snapshots.relativize(run.deltaFile), result.rows(),
                         result.added(), result.removed(), result.mutationRate());
-                nextUserId = run.firstNewUserId + result.added();
+                population = result.population();
                 run.added = result.added();
                 run.removed = result.removed();
             }
-            snapshots.commit(snapshot, nextUserId);
+            snapshots.commit(snapshot, population);
             outcome = State.COMPLETED;
         } catch (CancellationException e) {
             outcome = State.CANCELLED;
@@ -196,7 +205,7 @@ public class GenerationService implements DisposableBean {
         volatile SnapshotInfo base;
         volatile long sequence;
         volatile Long seed;
-        volatile long firstNewUserId;
+        volatile SegmentPopulation population;
         volatile BaselineSpec baseline;
         volatile Path file;
         volatile Path deltaFile;
@@ -213,13 +222,13 @@ public class GenerationService implements DisposableBean {
             this.startedAt = startedAt;
         }
 
-        void plan(SnapshotInfo base, long sequence, Long seed, long firstNewUserId, BaselineSpec baseline,
+        void plan(SnapshotInfo base, long sequence, Long seed, SegmentPopulation population, BaselineSpec baseline,
                   Path file, Path deltaFile) {
             this.base = base;
             this.mode = base == null ? Mode.FULL : Mode.MUTATION;
             this.sequence = sequence;
             this.seed = seed;
-            this.firstNewUserId = firstNewUserId;
+            this.population = population;
             this.baseline = baseline;
             this.file = file;
             this.deltaFile = deltaFile;

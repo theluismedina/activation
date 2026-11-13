@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -65,9 +66,11 @@ class GenerationServiceTest {
         SnapshotInfo s1 = manifest.snapshots().get(1);
         assertThat(s1.kind()).isEqualTo(Kind.MUTATION);
         assertThat(s1.rows()).isEqualTo(10_000 + s1.added() - s1.removed());
-        // New users are numbered after the baseline's user pool and never reused.
-        assertThat(manifest.nextUserId())
-                .isEqualTo(TestProperties.POOL + s1.added() + manifest.snapshots().get(2).added());
+        // The saved walks have advanced by exactly the rows each run added.
+        long handedOut = Arrays.stream(manifest.population().used()).sum();
+        assertThat(handedOut).isEqualTo(10_000 + s1.added() + manifest.snapshots().get(2).added());
+        assertThat(manifest.population().segmentCount()).isEqualTo(50);
+        assertThat(manifest.population().poolSize()).isEqualTo(TestProperties.POOL);
     }
 
     @Test
@@ -79,7 +82,7 @@ class GenerationServiceTest {
 
         assertThat(full.mode()).isEqualTo(Mode.FULL);
         assertThat(full.recordsProcessed()).isEqualTo(2_000);
-        assertThat(store.load().nextUserId()).isEqualTo(TestProperties.POOL);
+        assertThat(Arrays.stream(store.load().population().used()).sum()).isEqualTo(2_000);
     }
 
     @Test
@@ -95,10 +98,26 @@ class GenerationServiceTest {
     void impossibleBaselineSizeIsRejectedUpFront() {
         init(3);
 
-        // 50 segments x 10M users = 500M unique pairs
+        // 50 segments x 10M people = 500M unique pairs
         assertThatThrownBy(() -> service.start(Trigger.MANUAL, true, 500_000_001L))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThat(service.current()).isEmpty();
+    }
+
+    @Test
+    void manifestWithoutSegmentStateStartsANewBaseline() throws IOException {
+        init(3);
+        RunStatus first = runToCompletion(false, null);
+        // Rewrite the manifest the way earlier versions did: nextUserId instead of the segment population.
+        Path manifest = Path.of(first.file()).resolveSibling(SnapshotStore.MANIFEST);
+        String legacy = Files.readString(manifest).replaceFirst("\"population\"\\s*:\\s*\\{[^}]*\\}", "\"nextUserId\":5");
+        Files.writeString(manifest, legacy);
+        assertThat(store.load().population()).isNull();
+
+        RunStatus next = runToCompletion(false, null);
+
+        assertThat(next.mode()).isEqualTo(Mode.FULL);
+        assertThat(store.load().population()).isNotNull();
     }
 
     @Test

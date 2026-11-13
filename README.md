@@ -26,7 +26,7 @@ _Architecture diagram and component overview: coming in week 2._
 | Measurement | Result |
 |---|---|
 | Data sent: delta vs. full refresh | 313k vs. 10M rows (21 MB vs. 637 MB) for a 3% daily change |
-| Delta job runtime at 10M / 50M rows | ~27 s at 10M rows, 1–5% changed (16-core laptop, Docker); 50M _TBD_ |
+| Delta job runtime at 10M / 50M rows | ~21 s at 10M rows, 1–5% changed (16-core laptop, Docker); 50M _TBD_ |
 | Recovery after worker crash | _TBD_ |
 | Urgent-job latency during a large backfill | _TBD_ |
 
@@ -74,6 +74,16 @@ docker compose up -d                                           # uses the local 
 ```
 
 `docker compose down` keeps the generated data; `docker compose down -v` deletes it.
+
+## Generated data
+
+data-gen writes audience snapshots: one row per member of a segment, with columns `customer_id` (the tenant using the pipeline), `segment_id` (a market segment owned by that customer), and `hashed_user_id` (the person, as the SHA-256 of an email address, which is how ad platforms match people). With the default settings a 10M-row snapshot has:
+
+- **1,000 segments**: 100 customers × 10 segments. A (segment, person) pair never appears twice.
+- **Segment sizes with a long tail**: median about 5,000 members, 10,000 on average, from about 130 up to about 180,000. A log-normal spread, set with `datagen.segment-size-skew`.
+- **About 2M people, each in about 5 segments** (up to about 20), usually belonging to several customers. They come from a pool shared by all segments, set with `datagen.user-pool-size`.
+
+Each later run removes 1–5% of rows at random and adds new members to segments in proportion to their size, so the shape holds from day to day. An added member is never someone the segment had before.
 
 ## Delta format
 

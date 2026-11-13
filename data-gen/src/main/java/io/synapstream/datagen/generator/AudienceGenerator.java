@@ -23,11 +23,13 @@ import java.util.concurrent.CancellationException;
  *       and also writes the exact changes to an expected-delta file that a delta job's output can be checked
  *       against.</li>
  * </ul>
- * A snapshot never contains the same (segment, user) pair twice, so every change is unambiguous.
+ * A snapshot never contains the same (segment, user) pair twice, so every change is unambiguous. Users come from
+ * one pool shared by all segments, so each person belongs to several segments, across customers too; segment sizes
+ * have a long tail (see {@link BaselineSpec#segmentSizeSkew()}), and mutations keep that shape by adding to each
+ * segment in proportion to its current size. {@link SegmentPopulation} describes the segments and is carried from
+ * run to run.
  * <p>
- * Segment ids are globally unique: segment {@code s+1} (for {@code s} in {@code [0, customers * segmentsPerCustomer)})
- * belongs to customer {@code s / segmentsPerCustomer + 1}. User ids are hashed the way ad platforms expect: lowercase
- * hex SHA-256 of a normalized email address.
+ * User ids are hashed the way ad platforms expect: lowercase hex SHA-256 of a normalized email address.
  * <p>
  * Files are written under a temporary name and moved into place only once complete.
  */
@@ -42,30 +44,32 @@ public class AudienceGenerator {
     private static final byte[] HEX = "0123456789abcdef".getBytes(StandardCharsets.US_ASCII);
 
     /**
-     * @return the number of rows written
+     * @return the number of rows written, and the segment state to carry into the first mutation
      * @throws CancellationException if the monitor requested cancellation; no output file is left behind
      */
-    public long generateBaseline(BaselineSpec spec, WriterSettings settings, Path target, GenerationMonitor monitor)
+    public BaselineResult generateBaseline(BaselineSpec spec, WriterSettings settings, Path target, GenerationMonitor monitor)
             throws IOException {
         monitor.target(spec.recordCount());
         Path temp = tempFor(target);
         boolean done = false;
         try {
             SplittableRandom random = random(spec.seed());
-            UniqueUserPicker users = new UniqueUserPicker(spec, random);
+            SegmentPopulation.Walker users = SegmentPopulation.create(spec.segmentCount(), spec.segmentsPerCustomer(),
+                    spec.userPoolSize(), random).walker();
+            SegmentPicker segments = SegmentPicker.logNormal(spec.segmentCount(), spec.segmentSizeSkew(), random);
             MessageDigest sha256 = sha256();
 
             try (ParquetWriter<Audience> writer = AudienceWriteSupport.snapshotWriter(temp, settings)) {
                 for (long row = 0; row < spec.recordCount(); row++) {
                     checkpoint(row, monitor);
-                    int segment = users.nextSegment(random);
-                    writer.write(audience(segment, spec.segmentsPerCustomer(), users.nextUser(segment), sha256));
+                    int segment = segments.pick(random, s -> !users.exhausted(s));
+                    writer.write(audience(users, segment, sha256));
                 }
             }
             monitor.progress(spec.recordCount());
             AtomicFiles.moveIntoPlace(temp, target);
             done = true;
-            return spec.recordCount();
+            return new BaselineResult(spec.recordCount(), users.population());
         } finally {
             if (!done) {
                 Files.deleteIfExists(temp);
@@ -77,6 +81,8 @@ public class AudienceGenerator {
      * Copies {@code previous} to {@code target}, removing a random set of rows and appending new ones. The total
      * number of changed rows is a rate drawn from {@code [minRate, maxRate]} times the previous row count; between a
      * quarter and three quarters of the changes are removes, so audiences drift up and down a little over time.
+     * Removes are uniform over rows, and adds go to each segment in proportion to its size, so segment sizes keep
+     * their shape. Each add is a person the segment has never had, usually one already in other segments.
      * <p>
      * Every removed and added row is also written to {@code deltaTarget} with an {@code op} column.
      *
@@ -96,6 +102,8 @@ public class AudienceGenerator {
             long adds = changes - removes;
             monitor.target(previousRows + adds);
 
+            SegmentPopulation population = spec.population();
+            long[] sizes = new long[population.segmentCount()];
             MessageDigest sha256 = sha256();
             try (ParquetWriter<Audience> snapshot = AudienceWriteSupport.snapshotWriter(temp, settings);
                  ParquetWriter<DeltaRow> delta = AudienceWriteSupport.deltaWriter(deltaTemp, settings)) {
@@ -112,6 +120,12 @@ public class AudienceGenerator {
                         removed++;
                     } else {
                         snapshot.write(row);
+                        int segment = Math.toIntExact(row.segmentId() - 1);
+                        if (segment < 0 || segment >= sizes.length) {
+                            throw new IOException("Segment " + row.segmentId() + " in " + previous + " is not one of "
+                                    + "the " + sizes.length + " segments in the manifest; run a full baseline");
+                        }
+                        sizes[segment]++;
                     }
                     seen++;
                 }
@@ -119,20 +133,22 @@ public class AudienceGenerator {
                     throw new IOException("Expected " + previousRows + " rows in " + previous + " but read " + seen);
                 }
 
-                long userId = spec.firstNewUserId();
+                SegmentPopulation.Walker users = population.walker();
+                SegmentPicker segments = SegmentPicker.proportional(sizes);
                 for (long i = 0; i < adds; i++) {
                     checkpoint(previousRows + i, monitor);
-                    int segment = random.nextInt(spec.segmentCount());
-                    Audience added = audience(segment, spec.segmentsPerCustomer(), userId++, sha256);
+                    int segment = segments.pick(random, s -> !users.exhausted(s));
+                    Audience added = audience(users, segment, sha256);
                     snapshot.write(added);
                     delta.write(new DeltaRow(added, Op.ADD));
                 }
+                population = users.population();
             }
             monitor.progress(previousRows + adds);
             AtomicFiles.moveIntoPlace(deltaTemp, deltaTarget);
             AtomicFiles.moveIntoPlace(temp, target);
             done = true;
-            return new MutationResult(previousRows - removes + adds, adds, removes, rate);
+            return new MutationResult(previousRows - removes + adds, adds, removes, rate, population);
         } finally {
             if (!done) {
                 Files.deleteIfExists(temp);
@@ -142,8 +158,8 @@ public class AudienceGenerator {
         }
     }
 
-    private static Audience audience(int segment, int segmentsPerCustomer, long userId, MessageDigest sha256) {
-        return new Audience(segment / segmentsPerCustomer + 1L, segment + 1L, hashedEmail(userId, sha256));
+    private static Audience audience(SegmentPopulation.Walker users, int segment, MessageDigest sha256) {
+        return new Audience(users.customerId(segment), segment + 1L, hashedEmail(users.next(segment), sha256));
     }
 
     private static void checkpoint(long row, GenerationMonitor monitor) {
@@ -181,66 +197,6 @@ public class AudienceGenerator {
             return MessageDigest.getInstance("SHA-256");
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is required by every JVM", e);
-        }
-    }
-
-    /**
-     * Gives each segment a distinct sequence of users without tracking which users were used: segment {@code s}
-     * walks {@code offset_s, offset_s + step_s, offset_s + 2*step_s, ...} modulo the pool size. Because each step is
-     * coprime with the pool size, the walk visits every user once before repeating.
-     */
-    private static final class UniqueUserPicker {
-        private final long poolSize;
-        private final long[] next;
-        private final long[] step;
-        private final long[] used;
-
-        UniqueUserPicker(BaselineSpec spec, SplittableRandom random) {
-            this.poolSize = spec.userPoolSize();
-            int segments = spec.segmentCount();
-            this.next = new long[segments];
-            this.step = new long[segments];
-            this.used = new long[segments];
-            for (int s = 0; s < segments; s++) {
-                next[s] = random.nextLong(poolSize);
-                step[s] = coprimeStep(random);
-            }
-        }
-
-        /** A random segment that still has unused users. */
-        int nextSegment(SplittableRandom random) {
-            int segment;
-            do {
-                segment = random.nextInt(next.length);
-            } while (used[segment] >= poolSize);
-            return segment;
-        }
-
-        long nextUser(int segment) {
-            long user = next[segment];
-            next[segment] = (user + step[segment]) % poolSize;
-            used[segment]++;
-            return user;
-        }
-
-        private long coprimeStep(SplittableRandom random) {
-            if (poolSize == 1) {
-                return 1;
-            }
-            long candidate;
-            do {
-                candidate = random.nextLong(1, poolSize);
-            } while (gcd(candidate, poolSize) != 1);
-            return candidate;
-        }
-
-        private static long gcd(long a, long b) {
-            while (b != 0) {
-                long t = a % b;
-                a = b;
-                b = t;
-            }
-            return a;
         }
     }
 }
