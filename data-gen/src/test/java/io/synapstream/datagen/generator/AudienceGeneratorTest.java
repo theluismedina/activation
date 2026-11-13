@@ -17,11 +17,14 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -39,7 +42,8 @@ class AudienceGeneratorTest {
     void baselineHasRequestedRowsValidRangesAndNoDuplicates() throws IOException {
         Path file = dir.resolve("out/baseline.parquet");
 
-        long written = generator.generateBaseline(baseline(120_000, 42L), SETTINGS, file, GenerationMonitor.NONE);
+        long written = generator.generateBaseline(baseline(120_000, 42L), SETTINGS, file, GenerationMonitor.NONE)
+                .rows();
 
         assertThat(written).isEqualTo(120_000);
         assertThat(file.resolveSibling(file.getFileName() + AudienceGenerator.IN_PROGRESS_SUFFIX)).doesNotExist();
@@ -58,16 +62,17 @@ class AudienceGeneratorTest {
 
     @Test
     void baselineCanFillEverySegmentWithoutDuplicates() throws IOException {
-        // 50 segments x 100 users = exactly 5,000 unique pairs available
+        // 50 segments x 100 users = exactly 5,000 unique pairs available; skewed weights still fill every segment.
         Path file = dir.resolve("full.parquet");
-        generator.generateBaseline(new BaselineSpec(5_000, 10, 5, 100, 1L), SETTINGS, file, GenerationMonitor.NONE);
+        generator.generateBaseline(new BaselineSpec(5_000, 10, 5, 100, 1.2, 1L), SETTINGS, file,
+                GenerationMonitor.NONE);
 
         assertThat(keys(readAll(file, AudienceWriteSupport.SCHEMA))).hasSize(5_000);
     }
 
     @Test
     void baselineRejectsMoreRowsThanUniquePairs() {
-        assertThatThrownBy(() -> new BaselineSpec(5_001, 10, 5, 100, null))
+        assertThatThrownBy(() -> new BaselineSpec(5_001, 10, 5, 100, 1.2, null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -85,11 +90,12 @@ class AudienceGeneratorTest {
     @Test
     void mutationChangesBetweenOneAndFivePercentAndDeltaIsExact() throws IOException {
         Path previous = dir.resolve("s0.parquet");
-        generator.generateBaseline(baseline(200_000, 3L), SETTINGS, previous, GenerationMonitor.NONE);
+        BaselineResult base = generator.generateBaseline(baseline(200_000, 3L), SETTINGS, previous,
+                GenerationMonitor.NONE);
 
         Path next = dir.resolve("s1.parquet");
         Path delta = dir.resolve("deltas/s1.parquet");
-        MutationResult result = generator.mutate(mutation(1_000_000, 4L), SETTINGS, previous, next, delta,
+        MutationResult result = generator.mutate(mutation(base.population(), 4L), SETTINGS, previous, next, delta,
                 GenerationMonitor.NONE);
 
         Set<String> before = keys(readAll(previous, AudienceWriteSupport.SCHEMA));
@@ -120,6 +126,78 @@ class AudienceGeneratorTest {
     }
 
     @Test
+    void peopleBelongToSeveralSegmentsAndSegmentSizesHaveALongTail() throws IOException {
+        // 100 segments averaging 1,000 members, drawn from 20,000 people: about 5 segments per person.
+        Path file = dir.resolve("overlap.parquet");
+        generator.generateBaseline(new BaselineSpec(100_000, 10, 10, 20_000, 1.2, 5L), SETTINGS, file,
+                GenerationMonitor.NONE);
+        List<Group> rows = readAll(file, AudienceWriteSupport.SCHEMA);
+
+        Map<String, Long> segmentsPerPerson = rows.stream()
+                .collect(Collectors.groupingBy(r -> r.getString("hashed_user_id", 0), Collectors.counting()));
+        assertThat(segmentsPerPerson.size()).as("people appearing").isGreaterThan(19_000);
+        double average = (double) rows.size() / segmentsPerPerson.size();
+        assertThat(average).as("segments per person").isBetween(4.5, 5.5);
+        assertThat(segmentsPerPerson.values().stream().filter(n -> n >= 3).count())
+                .as("people in 3+ segments").isGreaterThan(segmentsPerPerson.size() / 2);
+
+        // The same person also turns up in the segments of different customers.
+        Map<String, Set<Long>> customersPerPerson = new HashMap<>();
+        rows.forEach(r -> customersPerPerson.computeIfAbsent(r.getString("hashed_user_id", 0), k -> new HashSet<>())
+                .add(r.getLong("customer_id", 0)));
+        assertThat(customersPerPerson.values().stream().filter(c -> c.size() > 1).count())
+                .isGreaterThan(customersPerPerson.size() / 2);
+
+        Map<Long, Long> sizes = segmentSizes(rows);
+        assertThat(sizes).hasSize(100);
+        long largest = sizes.values().stream().mapToLong(Long::longValue).max().orElseThrow();
+        long smallest = sizes.values().stream().mapToLong(Long::longValue).min().orElseThrow();
+        assertThat(largest).as("largest segment vs. the 1,000 average").isGreaterThan(3_000);
+        assertThat((double) largest / smallest).as("largest / smallest").isGreaterThan(20);
+    }
+
+    @Test
+    void zeroSkewGivesSegmentsOfEqualSize() throws IOException {
+        Path file = dir.resolve("even.parquet");
+        generator.generateBaseline(new BaselineSpec(100_000, 10, 10, 20_000, 0, 5L), SETTINGS, file,
+                GenerationMonitor.NONE);
+
+        assertThat(segmentSizes(readAll(file, AudienceWriteSupport.SCHEMA)).values())
+                .allSatisfy(size -> assertThat(size).isBetween(850L, 1_150L));
+    }
+
+    @Test
+    void mutationsNeverReAddAPersonToASegmentAndKeepSegmentSizes() throws IOException {
+        Path current = dir.resolve("m0.parquet");
+        SegmentPopulation population = generator.generateBaseline(new BaselineSpec(100_000, 10, 10, 20_000, 1.2, 8L),
+                SETTINGS, current, GenerationMonitor.NONE).population();
+        List<Group> baselineRows = readAll(current, AudienceWriteSupport.SCHEMA);
+        Map<Long, Long> baselineSizes = segmentSizes(baselineRows);
+        Set<String> everMember = keys(baselineRows);
+
+        for (int run = 1; run <= 5; run++) {
+            Path next = dir.resolve("m" + run + ".parquet");
+            Path delta = dir.resolve("deltas/m" + run + ".parquet");
+            MutationResult result = generator.mutate(mutation(population, 100L + run), SETTINGS, current, next, delta,
+                    GenerationMonitor.NONE);
+            List<Group> rows = readAll(next, AudienceWriteSupport.SCHEMA);
+            assertThat(keys(rows)).as("no duplicates after run " + run).hasSize(rows.size());
+            for (Group added : readAll(delta, AudienceWriteSupport.DELTA_SCHEMA)) {
+                if (added.getString("op", 0).equals("ADD")) {
+                    assertThat(everMember.add(key(added))).as("re-added " + key(added)).isTrue();
+                }
+            }
+            population = result.population();
+            current = next;
+        }
+
+        // Adds follow segment size, so after five runs each segment is still about its original size.
+        Map<Long, Long> sizes = segmentSizes(readAll(current, AudienceWriteSupport.SCHEMA));
+        baselineSizes.forEach((segment, before) -> assertThat(sizes.getOrDefault(segment, 0L))
+                .as("segment " + segment).isBetween(before * 85 / 100 - 20, before * 115 / 100 + 20));
+    }
+
+    @Test
     void hashIsHexSha256OfEmail() throws Exception {
         MessageDigest sha = MessageDigest.getInstance("SHA-256");
         String expected = HexFormat.of().formatHex(sha.digest("user123@example.com".getBytes()));
@@ -140,11 +218,12 @@ class AudienceGeneratorTest {
     @Test
     void cancelledMutationLeavesNoFilesBehind() throws IOException {
         Path previous = dir.resolve("s0.parquet");
-        generator.generateBaseline(baseline(200_000, 3L), SETTINGS, previous, GenerationMonitor.NONE);
+        BaselineResult base = generator.generateBaseline(baseline(200_000, 3L), SETTINGS, previous,
+                GenerationMonitor.NONE);
         Path next = dir.resolve("s1.parquet");
         Path delta = dir.resolve("deltas/s1.parquet");
 
-        assertThatThrownBy(() -> generator.mutate(mutation(1_000_000, null), SETTINGS, previous, next, delta,
+        assertThatThrownBy(() -> generator.mutate(mutation(base.population(), null), SETTINGS, previous, next, delta,
                 cancelAfterFirstCheck()))
                 .isInstanceOf(CancellationException.class);
         assertThat(next).doesNotExist();
@@ -168,11 +247,15 @@ class AudienceGeneratorTest {
     }
 
     private static BaselineSpec baseline(long records, Long seed) {
-        return new BaselineSpec(records, 10, 5, 1_000_000, seed);
+        return new BaselineSpec(records, 10, 5, 1_000_000, 1.2, seed);
     }
 
-    private static MutationSpec mutation(long firstNewUserId, Long seed) {
-        return new MutationSpec(10, 5, 0.01, 0.05, firstNewUserId, seed);
+    private static MutationSpec mutation(SegmentPopulation population, Long seed) {
+        return new MutationSpec(0.01, 0.05, population, seed);
+    }
+
+    private static Map<Long, Long> segmentSizes(List<Group> rows) {
+        return rows.stream().collect(Collectors.groupingBy(r -> r.getLong("segment_id", 0), Collectors.counting()));
     }
 
     private static String key(Group row) {

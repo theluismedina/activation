@@ -1,6 +1,8 @@
 package io.synapstream.datagen.snapshot;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import io.synapstream.datagen.config.DataGenProperties;
+import io.synapstream.datagen.generator.SegmentPopulation;
 import io.synapstream.datagen.support.AtomicFiles;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,7 +21,7 @@ import java.util.Optional;
  * Tracks snapshots through {@code manifest.json} in the output directory.
  * <p>
  * The manifest is the source of truth for consumers: a snapshot only counts once it is listed there. It also holds
- * the next never-used user id, so added rows are always new. Only the newest {@code datagen.retention} snapshots are
+ * the latest snapshot's {@link SegmentPopulation}, so the next mutation only adds people a segment has never had. Only the newest {@code datagen.retention} snapshots are
  * kept; older ones are removed from the manifest and their files deleted.
  */
 @Component
@@ -30,12 +32,14 @@ public class SnapshotStore {
     public static final String MANIFEST = "manifest.json";
 
     /**
-     * @param nextUserId first user id not used by any retained snapshot
+     * @param population segments of the latest snapshot; null in manifests written before it existed
      * @param snapshots  oldest first
      */
-    public record Manifest(long nextUserId, List<SnapshotInfo> snapshots) {
+    // Older manifests have a nextUserId field instead of population.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Manifest(SegmentPopulation population, List<SnapshotInfo> snapshots) {
 
-        static final Manifest EMPTY = new Manifest(0, List.of());
+        static final Manifest EMPTY = new Manifest(null, List.of());
 
         public Manifest {
             snapshots = snapshots == null ? List.of() : List.copyOf(snapshots);
@@ -91,7 +95,7 @@ public class SnapshotStore {
     }
 
     /** Appends {@code snapshot} to the manifest and deletes snapshots beyond the retention limit. */
-    public synchronized void commit(SnapshotInfo snapshot, long nextUserId) throws IOException {
+    public synchronized void commit(SnapshotInfo snapshot, SegmentPopulation population) throws IOException {
         List<SnapshotInfo> all = new ArrayList<>(load().snapshots());
         all.add(snapshot);
         int drop = Math.max(0, all.size() - retention);
@@ -99,7 +103,7 @@ public class SnapshotStore {
         List<SnapshotInfo> kept = List.copyOf(all.subList(drop, all.size()));
 
         // Write the manifest first so it never lists a file that has already been deleted.
-        AtomicFiles.writeJson(json, manifestFile, new Manifest(nextUserId, kept));
+        AtomicFiles.writeJson(json, manifestFile, new Manifest(population, kept));
         for (SnapshotInfo old : dropped) {
             delete(old.file());
             if (old.deltaFile() != null) {

@@ -1,6 +1,8 @@
 package io.synapstream.datagen.config;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
@@ -20,7 +22,10 @@ import java.time.ZoneId;
  * @param recordCount         rows in a FULL (baseline) snapshot (overridable per manual full run)
  * @param customerCount       number of distinct customers (tenants); ids are {@code 1..customerCount}
  * @param segmentsPerCustomer segments owned by each customer; segment ids are globally unique
- * @param userPoolSize        number of distinct users a baseline draws from
+ * @param userPoolSize        number of distinct people, shared by all segments; with {@code recordCount} rows each
+ *                            person is in about {@code recordCount / userPoolSize} segments
+ * @param segmentSizeSkew     spread of segment sizes (log-normal sigma): 0 makes every segment the same size, 1.2
+ *                            gives segments from a few hundred to a few hundred thousand members at the defaults
  * @param seed                optional RNG seed; with the same seed and settings a sequence of runs is reproducible
  * @param outputDir           directory holding snapshots, expected deltas and the manifest
  * @param compression         Parquet compression codec
@@ -33,9 +38,10 @@ import java.time.ZoneId;
 @ConfigurationProperties("datagen")
 public record DataGenProperties(
         @DefaultValue("10000000") @Positive long recordCount,
-        @DefaultValue("1000") @Positive int customerCount,
-        @DefaultValue("20") @Positive int segmentsPerCustomer,
-        @DefaultValue("50000000") @Positive long userPoolSize,
+        @DefaultValue("100") @Positive int customerCount,
+        @DefaultValue("10") @Positive int segmentsPerCustomer,
+        @DefaultValue("2000000") @Positive long userPoolSize,
+        @DefaultValue("1.2") @DecimalMin("0") @DecimalMax("4") double segmentSizeSkew,
         Long seed,
         @DefaultValue("data/audiences") @NotNull Path outputDir,
         @DefaultValue("SNAPPY") @NotNull CompressionCodecName compression,

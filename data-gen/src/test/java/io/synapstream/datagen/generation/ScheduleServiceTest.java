@@ -108,7 +108,7 @@ class ScheduleServiceTest {
     private DataGenProperties properties() {
         DataGenProperties base = TestProperties.create(dir);
         return new DataGenProperties(base.recordCount(), base.customerCount(), base.segmentsPerCustomer(),
-                base.userPoolSize(), base.seed(), base.outputDir(), base.compression(), base.rowGroupSize(),
+                base.userPoolSize(), base.segmentSizeSkew(), base.seed(), base.outputDir(), base.compression(), base.rowGroupSize(),
                 base.mutation(), base.retention(),
                 new DataGenProperties.Schedule("0 0 2 * * *", ZoneId.of("America/New_York"), true, stateFile));
     }
