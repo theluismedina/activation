@@ -1,35 +1,62 @@
 plugins {
-    id 'java'
+    id 'application'
     id 'com.google.cloud.tools.jib' version '3.5.4'
 }
 
 group = 'io.synapstream'
 version = '0.0.1-SNAPSHOT'
+description = 'delta-job'
+
+// JVM flags Spark needs on Java 17+ (from Spark's own launcher, JavaModuleOptions).
+def sparkJvmFlags = [
+        '-XX:+IgnoreUnrecognizedVMOptions',
+        '--add-opens=java.base/java.lang=ALL-UNNAMED',
+        '--add-opens=java.base/java.lang.invoke=ALL-UNNAMED',
+        '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
+        '--add-opens=java.base/java.io=ALL-UNNAMED',
+        '--add-opens=java.base/java.net=ALL-UNNAMED',
+        '--add-opens=java.base/java.nio=ALL-UNNAMED',
+        '--add-opens=java.base/java.util=ALL-UNNAMED',
+        '--add-opens=java.base/java.util.concurrent=ALL-UNNAMED',
+        '--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED',
+        '--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED',
+        '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED',
+        '--add-opens=java.base/sun.nio.cs=ALL-UNNAMED',
+        '--add-opens=java.base/sun.security.action=ALL-UNNAMED',
+        '--add-opens=java.base/sun.util.calendar=ALL-UNNAMED',
+        '-Djdk.reflect.useDirectMethodHandle=false',
+        '-Dio.netty.tryReflectionSetAccessible=true',
+]
+
+// Image name: <imageRegistry>/delta-job, same convention as data-gen.
+def imageRegistry = findProperty('imageRegistry') ?: 'ghcr.io/theluismedina/activation'
 jib {
     from {
-        // Use the exact same Spark image version as your cluster
-        image = 'apache/spark:3.5.3'
+        image = 'eclipse-temurin:21-jre'
     }
     to {
-        image = 'synapstream/activation/deltajob:latest'
-    }
-    extraDirectories {
-        paths {
-            // Only copies your start-cron.sh script into /usr/local/bin/
-            path {
-                from = file('src/main/jib')
-                into = '/'
-            }
-        }
-        permissions = [
-                '/usr/local/bin/start-cron.sh': '755'
-        ]
+        image = "${imageRegistry}/delta-job"
     }
     container {
-        // Required so apt-get and the cron daemon have permission to run
-        user = 'root'
-        entrypoint = ['/bin/sh', '-c', 'apt-get update && apt-get install -y cron && /usr/local/bin/start-cron.sh']
+        mainClass = 'io.synapstream.deltajob.DeltaJobApplication'
+        // Spark runs in local mode inside the container; the heap is sized from the container's memory limit.
+        jvmFlags = sparkJvmFlags + ['-XX:MaxRAMPercentage=75']
+        labels = [
+                'org.opencontainers.image.source'     : 'https://github.com/theluismedina/activation',
+                'org.opencontainers.image.description': 'Computes audience deltas between data-gen snapshots (Spark)',
+        ]
     }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+application {
+    mainClass = 'io.synapstream.deltajob.DeltaJobApplication'
+    applicationDefaultJvmArgs = sparkJvmFlags
 }
 
 repositories {
@@ -37,11 +64,17 @@ repositories {
 }
 
 dependencies {
+    // Spark SQL in local mode; it brings its own Hadoop client, Parquet, Jackson 2 and Log4j 2.
+    implementation 'org.apache.spark:spark-sql_2.13:4.2.1'
+
     testImplementation platform('org.junit:junit-bom:6.0.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.assertj:assertj-core:3.27.6'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-test {
+tasks.named('test') {
     useJUnitPlatform()
+    jvmArgs sparkJvmFlags
+    maxHeapSize = '2g'
 }

@@ -32,7 +32,7 @@ jobs:
 
       # Only modules that are functional are built; add others here as they become real.
       - name: Build and test
-        run: ./gradlew :data-gen:build
+        run: ./gradlew :data-gen:build :delta-job:build
 
       - name: Upload test reports
         if: failure()
@@ -81,7 +81,7 @@ jobs:
 
       - name: Build and push images (amd64 + arm64)
         run: >
-          ./gradlew :data-gen:jib
+          ./gradlew :data-gen:jib :delta-job:jib
           -PimageRegistry=${{ steps.image.outputs.registry }}
           -Djib.to.tags=latest,${{ steps.image.outputs.sha_tag }}
           -Djib.from.platforms=linux/amd64,linux/arm64
@@ -89,5 +89,6 @@ jobs:
       - name: Summary
         run: |
           echo "### Published images" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${{ steps.image.outputs.registry }}/data-gen:latest\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${{ steps.image.outputs.registry }}/data-gen:${{ steps.image.outputs.sha_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          for image in data-gen delta-job; do
+            echo "- \`${{ steps.image.outputs.registry }}/$image:latest\`, \`:${{ steps.image.outputs.sha_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          done

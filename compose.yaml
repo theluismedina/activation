@@ -15,15 +15,22 @@ services:
      volumes:
        - audience-data:/data
 
+   delta-job:
+     # Runs once and exits: diffs data-gen's latest snapshot against the previous delta's target and writes the
+     # changes to the delta-data volume. Not started by `up`; run it with `docker compose run --rm delta-job`
+     # (add --verify to check against data-gen's expected delta, or --full to send the whole audience).
+     profiles: [job]
+     image: ${IMAGE_REGISTRY:-ghcr.io/theluismedina/activation}/delta-job:${IMAGE_TAG:-latest}
+     environment:
+       DELTAJOB_AUDIENCES_DIR: /data/audiences
+       DELTAJOB_OUTPUT_DIR: /deltas
+     volumes:
+       # Same mount point as data-gen, so paths in manifest.json resolve identically. Read-only: data-gen owns it.
+       - audience-data:/data:ro
+       - delta-data:/deltas
+
    # The services below have no published images yet, so they only start with `--profile wip`
    # (after building them locally).
-
-   delta-job:
-    profiles: [wip]
-    image:  synapstream/activation/deltajob:latest
-    volumes:
-      # Same mount point as data-gen, so paths in manifest.json resolve identically. Read-only: data-gen owns it.
-      - audience-data:/data:ro
 
    workflow:
      profiles: [wip]
@@ -36,3 +43,5 @@ services:
 volumes:
    # Audience snapshots, expected deltas, manifest.json and the saved schedule, written by data-gen.
    audience-data:
+   # One directory per delta (changes.parquet + manifest.json), written by delta-job, read by the workflow.
+   delta-data:
