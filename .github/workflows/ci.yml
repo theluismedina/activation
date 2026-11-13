@@ -19,16 +19,16 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
 
       # Only modules that are functional are built; add others here as they become real.
       - name: Build and test
@@ -36,7 +36,7 @@ jobs:
 
       - name: Upload test reports
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports
           path: '**/build/reports/tests/'
@@ -44,19 +44,19 @@ jobs:
   publish:
     needs: build
     if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
 
       # Registry is configurable: set the repository variable IMAGE_REGISTRY (e.g. docker.io/myorg/activation)
       # and the secrets REGISTRY_USERNAME / REGISTRY_PASSWORD. Without them, images go to GHCR under this repo.
@@ -73,7 +73,7 @@ jobs:
           echo "sha_tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       # Jib picks up these credentials from the Docker config.
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ${{ steps.image.outputs.host }}
           username: ${{ secrets.REGISTRY_USERNAME || github.actor }}
